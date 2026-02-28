@@ -38,14 +38,13 @@ def allowed_file(filename):
 
 def get_efficient_fingerprint(file_path):
     """Calculates or retrieves a cached fingerprint using a file hash."""
-    # Hash the first 1MB of the file for a quick unique ID
     with open(file_path, 'rb') as f:
         file_hash = hashlib.md5(f.read(1024*1024)).hexdigest()
     
     if file_hash in FINGERPRINT_CACHE:
         return FINGERPRINT_CACHE[file_hash]
     
-    # Generate fresh if not in cache using the verified shell path
+    # Path to fpcalc - ensure this is correct for your Mac
     cmd = f"/opt/homebrew/bin/fpcalc -plain '{file_path}'"
     fp = subprocess.check_output(cmd, shell=True, timeout=30).decode().strip()
     
@@ -72,43 +71,48 @@ def analyze_temporal_drift(anchor_path, rendition_path, sr=22050, hop_length=512
     try:
         abs_anchor = os.path.abspath(anchor_path)
         abs_rendition = os.path.abspath(rendition_path)
-        
-        # 1. ENHANCED FINGERPRINTING & CACHING
-        try:
-            fp_a = get_efficient_fingerprint(abs_anchor)
-            fp_b = get_efficient_fingerprint(abs_rendition)
-            
-            raw_match = acoustid.compare_fingerprints(fp_a, fp_b)
-            match_score = round(raw_match * 100, 2)
-            
-            # Failsafe for identical files
-            if fp_a == fp_b:
-                match_score = 100.0
-        except Exception as fp_err:
-            print(f"DEBUG Fingerprint Error: {fp_err}")
-            match_score = 0.0
+        match_score = 0.0
 
-        # 2. MEMORY-EFFICIENT LOADING (First 60s only)
+        # --- FAILSAFE: BYTE-LEVEL COMPARISON ---
+        # If user uploads the exact same file, this forces 100%
+        with open(abs_anchor, 'rb') as f1, open(abs_rendition, 'rb') as f2:
+            if f1.read(1024*1024) == f2.read(1024*1024):
+                match_score = 100.0
+
+        # --- FINGERPRINTING (If not already determined 100%) ---
+        if match_score < 100:
+            try:
+                fp_a = get_efficient_fingerprint(abs_anchor)
+                fp_b = get_efficient_fingerprint(abs_rendition)
+                
+                if fp_a and fp_b:
+                    if fp_a == fp_b:
+                        match_score = 100.0
+                    else:
+                        raw_match = acoustid.compare_fingerprints(fp_a, fp_b)
+                        match_score = round(raw_match * 100, 2)
+            except Exception as fp_err:
+                print(f"DEBUG Fingerprint Error: {fp_err}")
+                match_score = 0.0
+
+        # --- SIGNAL PROCESSING ---
         anchor_buffer, _ = librosa.load(abs_anchor, sr=sr, mono=True, duration=60)
         rendition_buffer, _ = librosa.load(abs_rendition, sr=sr, mono=True, duration=60)
         
         a_trimmed, _ = librosa.effects.trim(anchor_buffer)
         r_trimmed, _ = librosa.effects.trim(rendition_buffer)
         
-        # 3. SIGNAL PROCESSING (RMS Envelopes)
         anchor_env = librosa.feature.rms(y=a_trimmed, hop_length=hop_length)[0]
         rendition_env = librosa.feature.rms(y=r_trimmed, hop_length=hop_length)[0]
         
-        # Normalize
         anchor_env = (anchor_env - anchor_env.min()) / (anchor_env.max() - anchor_env.min() + 1e-10)
         rendition_env = (rendition_env - rendition_env.min()) / (rendition_env.max() - rendition_env.min() + 1e-10)
         
-        # Cross-Correlation for Lag detection
         correlation = signal.correlate(rendition_env, anchor_env, mode='same')
         lag_frame = np.argmax(correlation) - len(anchor_env) // 2
         drift_ms = round(float(lag_frame * hop_length / sr * 1000), 2)
         
-        # 4. NUANCED VALIDATION LOGIC
+        # --- VALIDATION LOGIC ---
         issues = []
         if abs(drift_ms) > 100:
             issues.append("Severe desync (>100ms)")
@@ -117,11 +121,10 @@ def analyze_temporal_drift(anchor_path, rendition_path, sr=22050, hop_length=512
             
         if match_score < 30:
             issues.append("Content mismatch - wrong dub?")
-        elif match_score < 60:
+        elif match_score < 70:
             issues.append("Low confidence match")
             
         validation_flag = len(issues) > 0
-        
         viz = generate_visual_comparison(anchor_buffer[:sr*15], rendition_buffer[:sr*15], drift_ms, match_score, sr)
         
         return drift_ms, validation_flag, viz, match_score, issues
@@ -137,14 +140,12 @@ def index():
 @app.route('/clear_cache', methods=['POST'])
 def clear_cache():
     try:
-        # Clear physical files
         for item in os.listdir(MEDIA_VOLATILE_PATH):
             item_path = os.path.join(MEDIA_VOLATILE_PATH, item)
             if os.path.isdir(item_path):
                 shutil.rmtree(item_path)
             else:
                 os.remove(item_path)
-        # Clear memory cache
         FINGERPRINT_CACHE.clear()
         return jsonify({'status': 'Cache and Memory cleared successfully'})
     except Exception as e:
@@ -169,7 +170,6 @@ def upload_files():
                 r_path = os.path.join(analysis_root, track.filename)
                 track.save(r_path)
                 
-                # Unpack the new return values including the 'issues' list
                 drift, needs_val, viz, score, issues = analyze_temporal_drift(anchor_path, r_path)
                 
                 results.append({
