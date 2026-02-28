@@ -59,11 +59,18 @@ def analyze_temporal_drift(anchor_path, rendition_path, sr=22050, hop_length=512
             cmd_a = f"/opt/homebrew/bin/fpcalc -plain '{abs_anchor}'"
             cmd_b = f"/opt/homebrew/bin/fpcalc -plain '{abs_rendition}'"
             
-            fp_a = subprocess.check_output(cmd_a, shell=True, text=True).strip()
-            fp_b = subprocess.parse_output = subprocess.check_output(cmd_b, shell=True, text=True).strip()
+            # Use check_output and .decode() to ensure we get a string, not bytes
+            fp_a = subprocess.check_output(cmd_a, shell=True).decode().strip()
+            fp_b = subprocess.check_output(cmd_b, shell=True).decode().strip()
 
             if fp_a and fp_b:
-                match_score = round(acoustid.compare_fingerprints(fp_a, fp_b) * 100, 2)
+                # Failsafe: If DNA is identical, it's 100%
+                if fp_a == fp_b:
+                    match_score = 100.0
+                else:
+                    match_score = round(acoustid.compare_fingerprints(fp_a, fp_b) * 100, 2)
+            else:
+                print("DEBUG: One or both fingerprints are empty strings")
         except Exception as fp_err:
             print(f"DEBUG: Shell Fingerprinting failed: {fp_err}")
 
@@ -135,6 +142,9 @@ def upload_files():
         return jsonify({'reference': anchor_track.filename, 'results': results})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+    finally:
+        # We don't rmtree here anymore to ensure fpcalc has access during execution
+        pass
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5001)
