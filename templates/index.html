@@ -5,396 +5,95 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Audio Sync Checker</title>
     <style>
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        }
-        body {
-            background: #f5f7fb;
-            display: flex;
-            justify-content: center;
-            padding: 2rem;
-            min-height: 100vh;
-        }
-        .container {
-            max-width: 1000px;
-            width: 100%;
-        }
-        .card {
-            background: white;
-            border-radius: 20px;
-            box-shadow: 0 10px 25px rgba(0,0,0,0.05);
-            padding: 2rem;
-            margin-bottom: 2rem;
-        }
-        h1 {
-            font-size: 2rem;
-            font-weight: 600;
-            color: #1e293b;
-            margin-bottom: 0.5rem;
-        }
-        .subtitle {
-            color: #64748b;
-            margin-bottom: 2rem;
-        }
-        .upload-section {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 2rem;
-        }
-        .upload-box {
-            flex: 1 1 250px;
-            background: #f8fafc;
-            border-radius: 16px;
-            padding: 1.5rem;
-            border: 2px dashed #cbd5e1;
-            transition: border 0.2s;
-        }
-        .upload-box:hover {
-            border-color: #94a3b8;
-        }
-        .upload-box h3 {
-            font-size: 1.1rem;
-            font-weight: 500;
-            color: #334155;
-            margin-bottom: 1rem;
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-        }
-        .upload-box h3 span {
-            background: #e2e8f0;
-            border-radius: 20px;
-            padding: 0.2rem 0.8rem;
-            font-size: 0.8rem;
-            font-weight: 400;
-            color: #475569;
-        }
-        .file-input-label {
-            display: inline-block;
-            background: white;
-            border: 1px solid #cbd5e1;
-            border-radius: 40px;
-            padding: 0.6rem 1.2rem;
-            font-size: 0.9rem;
-            font-weight: 500;
-            color: #1e293b;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-        .file-input-label:hover {
-            background: #f1f5f9;
-        }
-        input[type="file"] {
-            display: none;
-        }
-        .file-list {
-            margin-top: 1rem;
-            font-size: 0.9rem;
-            color: #475569;
-        }
-        .file-list p {
-            margin: 0.3rem 0;
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-        }
-        .file-list .file-icon {
-            color: #3b82f6;
-        }
-        .action-bar {
-            display: flex;
-            justify-content: flex-end;
-            margin-top: 2rem;
-            gap: 1rem;
-            align-items: center;
-        }
-        .primary-btn {
-            background: #3b82f6;
-            color: white;
-            border: none;
-            border-radius: 40px;
-            padding: 0.75rem 2rem;
-            font-weight: 600;
-            font-size: 1rem;
-            cursor: pointer;
-            transition: background 0.2s;
-            display: inline-flex;
-            align-items: center;
-            gap: 0.5rem;
-        }
-        .primary-btn:hover {
-            background: #2563eb;
-        }
-        .primary-btn:disabled {
-            background: #94a3b8;
-            cursor: not-allowed;
-        }
-        .loading {
-            display: none;
-            align-items: center;
-            gap: 0.5rem;
-            color: #3b82f6;
-        }
-        .loading .spinner {
-            width: 20px;
-            height: 20px;
-            border: 3px solid #e2e8f0;
-            border-top-color: #3b82f6;
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-        }
-        @keyframes spin { to { transform: rotate(360deg); } }
-
-        /* Results */
-        .summary-card {
-            background: #f0f9ff;
-            border-left: 4px solid #3b82f6;
-            padding: 1.5rem;
-            border-radius: 12px;
-            margin-bottom: 2rem;
-        }
-        .summary-title {
-            font-weight: 600;
-            color: #1e293b;
-            margin-bottom: 1rem;
-        }
-        .summary-stats {
-            display: flex;
-            gap: 2rem;
-            flex-wrap: wrap;
-        }
-        .stat-item {
-            background: white;
-            border-radius: 30px;
-            padding: 0.5rem 1.2rem;
-            font-size: 0.95rem;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.03);
-        }
-        .stat-item .label {
-            color: #64748b;
-            margin-right: 0.5rem;
-        }
-        .stat-item .value {
-            font-weight: 600;
-            color: #0f172a;
-        }
-        .recommendation {
-            margin-top: 1rem;
-            padding: 1rem;
-            background: #fef9c3;
-            border-radius: 10px;
-            color: #854d0e;
-            font-size: 0.95rem;
-        }
-        .recommendation strong {
-            color: #1e293b;
-        }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            background: white;
-            border-radius: 16px;
-            overflow: hidden;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.02);
-        }
-        th {
-            background: #f1f5f9;
-            color: #334155;
-            font-weight: 500;
-            font-size: 0.9rem;
-            padding: 1rem;
-            text-align: left;
-        }
-        td {
-            padding: 1rem;
-            border-bottom: 1px solid #e2e8f0;
-            color: #1e293b;
-        }
-        tr:last-child td {
-            border-bottom: none;
-        }
-        .status-badge {
-            display: inline-block;
-            padding: 0.2rem 1rem;
-            border-radius: 30px;
-            font-size: 0.8rem;
-            font-weight: 500;
-        }
-        .status-ok {
-            background: #d1fae5;
-            color: #065f46;
-        }
-        .status-review {
-            background: #fee2e2;
-            color: #991b1b;
-        }
-        .checkbox-manual {
-            width: 20px;
-            height: 20px;
-            cursor: pointer;
-        }
-        .footer-note {
-            margin-top: 1rem;
-            color: #64748b;
-            font-size: 0.9rem;
-            text-align: center;
-        }
+        * { box-sizing: border-box; margin: 0; font-family: 'Inter', sans-serif; }
+        body { background: #f5f7fb; display: flex; justify-content: center; padding: 2rem; min-height: 100vh; }
+        .container { max-width: 1000px; width: 100%; }
+        .card { background: white; border-radius: 20px; box-shadow: 0 10px 25px rgba(0,0,0,0.05); padding: 2rem; margin-bottom: 2rem; }
+        h1 { font-size: 2rem; color: #1e293b; margin-bottom: 0.5rem; }
+        .subtitle { color: #64748b; margin-bottom: 2rem; }
+        .upload-section { display: flex; flex-wrap: wrap; gap: 2rem; }
+        .upload-box { flex: 1 1 250px; background: #f8fafc; border-radius: 16px; padding: 1.5rem; border: 2px dashed #cbd5e1; }
+        .file-input-label { display: inline-block; background: white; border: 1px solid #cbd5e1; border-radius: 40px; padding: 0.6rem 1.2rem; cursor: pointer; }
+        input[type="file"] { display: none; }
+        .primary-btn { background: #3b82f6; color: white; border: none; border-radius: 40px; padding: 0.75rem 2rem; font-weight: 600; cursor: pointer; }
+        .primary-btn:disabled { background: #94a3b8; }
+        table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
+        th { background: #f1f5f9; padding: 1rem; text-align: left; }
+        td { padding: 1rem; border-bottom: 1px solid #e2e8f0; }
+        .status-badge { padding: 0.2rem 1rem; border-radius: 30px; font-size: 0.8rem; }
+        .status-ok { background: #d1fae5; color: #065f46; }
+        .status-review { background: #fee2e2; color: #991b1b; }
+        #loading { display: none; align-items: center; gap: 0.5rem; color: #3b82f6; }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="card">
             <h1>🎧 Audio Sync Checker</h1>
-            <p class="subtitle">Upload a reference audio (e.g., English) and the tracks you want to compare (Spanish, French, etc.). We'll detect any timing mismatches.</p>
-
-            <!-- Upload Section -->
+            <p class="subtitle">Upload reference audio and target tracks to detect timing mismatches.</p>
             <div class="upload-section">
-                <!-- Reference File -->
                 <div class="upload-box">
-                    <h3>📌 Reference File <span>1 file</span></h3>
-                    <label for="refFile" class="file-input-label">Choose reference audio</label>
-                    <input type="file" id="refFile" accept=".wav,.mp3,.m4a,.flac,.aac">
-                    <div class="file-list" id="refFileList"></div>
+                    <h3>📌 Reference</h3>
+                    <label for="refFile" class="file-input-label">Choose File</label>
+                    <input type="file" id="refFile" accept=".wav,.mp3,.m4a,.flac,.aac,.mp4">
+                    <div id="refFileList"></div>
                 </div>
-
-                <!-- Comparison Files -->
                 <div class="upload-box">
-                    <h3>🔁 Comparison Files <span>multiple</span></h3>
-                    <label for="compFiles" class="file-input-label">Choose audio files</label>
-                    <input type="file" id="compFiles" multiple accept=".wav,.mp3,.m4a,.flac,.aac">
-                    <div class="file-list" id="compFileList"></div>
+                    <h3>🔁 Comparison</h3>
+                    <label for="compFiles" class="file-input-label">Choose Files</label>
+                    <input type="file" id="compFiles" multiple accept=".wav,.mp3,.m4a,.flac,.aac,.mp4">
+                    <div id="compFileList"></div>
                 </div>
             </div>
-
-            <!-- Action Bar -->
-            <div class="action-bar">
-                <div class="loading" id="loading">
-                    <div class="spinner"></div> Processing...
-                </div>
+            <div style="display: flex; justify-content: flex-end; margin-top: 2rem; gap: 1rem;">
+                <div id="loading">Processing...</div>
                 <button class="primary-btn" id="checkBtn" onclick="uploadFiles()">▶ Check Sync</button>
             </div>
         </div>
-
-        <!-- Results Section -->
         <div id="results" class="card" style="display: none;"></div>
     </div>
 
     <script>
-        // Display selected file names
-        document.getElementById('refFile').addEventListener('change', function(e) {
-            const listDiv = document.getElementById('refFileList');
-            if (this.files.length) {
-                listDiv.innerHTML = `<p><span class="file-icon">📄</span> ${this.files[0].name}</p>`;
-            } else {
-                listDiv.innerHTML = '';
-            }
+        document.getElementById('refFile').addEventListener('change', function() {
+            document.getElementById('refFileList').innerText = this.files[0]?.name || '';
         });
-
-        document.getElementById('compFiles').addEventListener('change', function(e) {
-            const listDiv = document.getElementById('compFileList');
-            if (this.files.length) {
-                let html = '';
-                for (let file of this.files) {
-                    html += `<p><span class="file-icon">📄</span> ${file.name}</p>`;
-                }
-                listDiv.innerHTML = html;
-            } else {
-                listDiv.innerHTML = '';
-            }
+        document.getElementById('compFiles').addEventListener('change', function() {
+            document.getElementById('compFileList').innerText = `${this.files.length} files selected`;
         });
 
         async function uploadFiles() {
             const refInput = document.getElementById('refFile');
             const compInput = document.getElementById('compFiles');
-
-            if (!refInput.files.length) {
-                alert('Please select a reference file.');
-                return;
-            }
-            if (compInput.files.length < 1) {
-                alert('Please select at least one comparison file.');
-                return;
-            }
+            if (!refInput.files.length || !compInput.files.length) return alert('Select both reference and comparison files.');
 
             const formData = new FormData();
             formData.append('reference', refInput.files[0]);
-            for (let i = 0; i < compInput.files.length; i++) {
-                formData.append('comparison[]', compInput.files[i]);
-            }
+            for (let f of compInput.files) formData.append('comparison[]', f);
 
             document.getElementById('loading').style.display = 'flex';
             document.getElementById('checkBtn').disabled = true;
-            document.getElementById('results').style.display = 'none';
 
             try {
-                const response = await fetch('/upload', {
-                    method: 'POST',
-                    body: formData
-                });
-                const data = await response.json();
+                const res = await fetch('/upload', { method: 'POST', body: formData });
+                const data = await res.json();
+                if (data.error) throw new Error(data.error);
                 displayResults(data);
-            } catch (error) {
-                alert('Error: ' + error);
-            } finally {
+            } catch (e) { alert(e.message); }
+            finally {
                 document.getElementById('loading').style.display = 'none';
                 document.getElementById('checkBtn').disabled = false;
             }
         }
 
         function displayResults(data) {
-            const resultsDiv = document.getElementById('results');
-            resultsDiv.style.display = 'block';
-
-            // Determine overall status
-            const needsReviewCount = data.results.filter(r => r.needs_review).length;
-            const total = data.results.length;
-            const allOk = needsReviewCount === 0;
-
-            // Build summary HTML
-            let summaryHtml = `
-                <div class="summary-card">
-                    <div class="summary-title">📊 Summary</div>
-                    <div class="summary-stats">
-                        <div class="stat-item"><span class="label">Reference:</span> <span class="value">${data.reference}</span></div>
-                        <div class="stat-item"><span class="label">Files checked:</span> <span class="value">${total}</span></div>
-                        <div class="stat-item"><span class="label">Needs review:</span> <span class="value">${needsReviewCount}</span></div>
-                    </div>
-            `;
-
-            // Recommendation
-            if (allOk) {
-                summaryHtml += `<div class="recommendation">✅ All files are in sync. No manual validation required.</div>`;
-            } else {
-                summaryHtml += `<div class="recommendation">⚠️ <strong>${needsReviewCount} file(s)</strong> have offsets beyond the threshold (50ms). Please review manually.</div>`;
-            }
-            summaryHtml += `</div>`;
-
-            // Table
-            let tableHtml = `<table>
-                <tr><th>File</th><th>Offset (ms)</th><th>Status</th><th>Manual Validation</th></tr>`;
-            data.results.forEach(item => {
-                const statusClass = item.needs_review ? 'status-review' : 'status-ok';
-                const statusText = item.needs_review ? 'Needs Review' : 'OK';
-                tableHtml += `
-                    <tr>
-                        <td>${item.filename}</td>
-                        <td>${item.offset_ms}</td>
-                        <td><span class="status-badge ${statusClass}">${statusText}</span></td>
-                        <td><input type="checkbox" class="checkbox-manual" ${item.needs_review ? 'checked' : ''} onchange="markManual('${item.filename}', this.checked)"></td>
-                    </tr>
-                `;
+            const div = document.getElementById('results');
+            div.style.display = 'block';
+            let html = `<h2>Results for: ${data.reference}</h2><table><tr><th>File</th><th>Offset (ms)</th><th>Status</th></tr>`;
+            data.results.forEach(r => {
+                const cls = r.needs_review ? 'status-review' : 'status-ok';
+                html += `<tr><td>${r.filename}</td><td>${r.offset_ms}</td><td><span class="status-badge ${cls}">${r.needs_review ? 'Review' : 'OK'}</span></td></tr>`;
             });
-            tableHtml += '</table>';
-            tableHtml += '<p class="footer-note">Checkboxes are pre‑filled based on automatic detection. You can adjust them manually.</p>';
-
-            resultsDiv.innerHTML = summaryHtml + tableHtml;
-        }
-
-        function markManual(filename, checked) {
-            console.log(`Manual validation for ${filename}: ${checked}`);
-            // You can extend this to store state or send to backend
+            div.innerHTML = html + '</table>';
         }
     </script>
 </body>
