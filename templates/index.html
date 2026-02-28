@@ -1,1 +1,86 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Audio Sync Checker POC</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; }
+        .container { max-width: 800px; margin: auto; }
+        .file-input { margin: 20px 0; }
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background-color: #f2f2f2; }
+        .needs-review { background-color: #ffe6e6; }
+        .ok { background-color: #e6ffe6; }
+        button { padding: 10px 20px; font-size: 16px; }
+        .loading { display: none; color: blue; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Audio Sync Checker (POC)</h1>
+        <p>Upload multiple audio files (e.g., English, Spanish, French). The first file will be used as the reference.</p>
+        <div class="file-input">
+            <input type="file" id="fileInput" multiple accept=".wav,.mp3,.m4a,.flac,.aac">
+            <button onclick="uploadFiles()">Check Sync</button>
+            <span class="loading" id="loading">Processing...</span>
+        </div>
+        <div id="results"></div>
+    </div>
 
+    <script>
+        async function uploadFiles() {
+            const input = document.getElementById('fileInput');
+            if (input.files.length < 2) {
+                alert('Please select at least two files.');
+                return;
+            }
+
+            const formData = new FormData();
+            for (let i = 0; i < input.files.length; i++) {
+                formData.append('files[]', input.files[i]);
+            }
+
+            document.getElementById('loading').style.display = 'inline';
+            document.getElementById('results').innerHTML = '';
+
+            try {
+                const response = await fetch('/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await response.json();
+                displayResults(data);
+            } catch (error) {
+                alert('Error: ' + error);
+            } finally {
+                document.getElementById('loading').style.display = 'none';
+            }
+        }
+
+        function displayResults(data) {
+            let html = '<h2>Results</h2>';
+            html += `<p><strong>Reference:</strong> ${data.reference}</p>`;
+            html += '<table><tr><th>File</th><th>Offset (ms)</th><th>Status</th><th>Manual Validation</th></tr>';
+
+            data.results.forEach(item => {
+                const statusClass = item.needs_review ? 'needs-review' : 'ok';
+                const statusText = item.needs_review ? 'Needs Review' : 'OK';
+                html += `<tr class="${statusClass}">
+                    <td>${item.filename}</td>
+                    <td>${item.offset_ms}</td>
+                    <td>${statusText}</td>
+                    <td><input type="checkbox" ${item.needs_review ? 'checked' : ''} onchange="markManual('${item.filename}', this.checked)"></td>
+                </tr>`;
+            });
+            html += '</table>';
+            html += '<p>Checkboxes are pre‑filled based on automatic detection. You can adjust them manually.</p>';
+            document.getElementById('results').innerHTML = html;
+        }
+
+        function markManual(filename, checked) {
+            // This could send an update to backend if needed, but for POC we just log.
+            console.log(`Manual validation for ${filename}: ${checked}`);
+        }
+    </script>
+</body>
+</html>
