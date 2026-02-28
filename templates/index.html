@@ -47,6 +47,11 @@
         
         .spinner { width: 20px; height: 20px; border: 3px solid #bfdbfe; border-top: 3px solid #2563eb; border-radius: 50%; animation: spin 1s linear infinite; }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        /* Issue List Styling */
+        .issue-box { background: #fff1f2; border: 1px solid #fda4af; border-radius: 8px; padding: 1rem; margin-bottom: 1.5rem; }
+        .issue-title { color: #9f1239; font-size: 0.9rem; font-weight: 700; display: block; margin-bottom: 5px; }
+        .issue-list { color: #be123c; font-size: 0.85rem; padding-left: 1.2rem; }
     </style>
 </head>
 <body>
@@ -92,7 +97,7 @@
         });
 
         async function clearCache() {
-            if (!confirm("Are you sure you want to delete all temporary upload data?")) return;
+            if (!confirm("Are you sure you want to delete all temporary upload data and clear the fingerprint cache?")) return;
             try {
                 const res = await fetch('/clear_cache', { method: 'POST' });
                 const data = await res.json();
@@ -111,15 +116,9 @@
                 return alert('Input Required: Please select both a Master and at least one Comparison file.');
             }
 
-            const minSize = 1024; 
-            if (refInput.files[0].size < minSize) {
-                return alert(`Error: Reference file "${refInput.files[0].name}" is too small/empty.`);
-            }
-
             const formData = new FormData();
             formData.append('reference', refInput.files[0]);
             for (let f of compInput.files) {
-                if (f.size < minSize) continue; // Skip empty files in batch
                 formData.append('comparison[]', f);
             }
 
@@ -153,10 +152,24 @@
                 const cls = isFail ? 'status-review' : 'status-ok';
                 const label = isFail ? 'Attention Required' : 'Sync Match OK';
                 
+                // Detailed issue reporting
+                let issuesHtml = '';
+                if (r.issues && r.issues.length > 0) {
+                    issuesHtml = `
+                        <div class="issue-box">
+                            <strong class="issue-title">Detected Issues:</strong>
+                            <ul class="issue-list">
+                                ${r.issues.map(issue => `<li>${issue}</li>`).join('')}
+                            </ul>
+                        </div>`;
+                }
+                
                 html += `
                     <div class="result-item">
                         <span class="status-badge ${cls}">${label}</span>
-                        <h4 style="color:#334155; margin-bottom: 1.5rem;">${r.filename}</h4>
+                        <h4 style="color:#334155; margin-bottom: 1rem;">${r.filename}</h4>
+                        
+                        ${issuesHtml}
                         
                         <div class="stats-grid">
                             <div class="stat-card">
