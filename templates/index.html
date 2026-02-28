@@ -13,40 +13,39 @@
         .subtitle { color: #64748b; margin-bottom: 2rem; }
         .upload-section { display: flex; flex-wrap: wrap; gap: 2rem; }
         .upload-box { flex: 1 1 250px; background: #f8fafc; border-radius: 16px; padding: 1.5rem; border: 2px dashed #cbd5e1; }
-        .file-input-label { display: inline-block; background: white; border: 1px solid #cbd5e1; border-radius: 40px; padding: 0.6rem 1.2rem; cursor: pointer; }
+        .file-input-label { display: inline-block; background: white; border: 1px solid #cbd5e1; border-radius: 40px; padding: 0.6rem 1.2rem; cursor: pointer; margin-top: 10px; }
         input[type="file"] { display: none; }
         .primary-btn { background: #3b82f6; color: white; border: none; border-radius: 40px; padding: 0.75rem 2rem; font-weight: 600; cursor: pointer; }
         .primary-btn:disabled { background: #94a3b8; }
-        table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
-        th { background: #f1f5f9; padding: 1rem; text-align: left; }
-        td { padding: 1rem; border-bottom: 1px solid #e2e8f0; }
-        .status-badge { padding: 0.2rem 1rem; border-radius: 30px; font-size: 0.8rem; }
+        .result-item { border: 1px solid #e2e8f0; border-radius: 12px; padding: 1.5rem; margin-top: 1.5rem; }
+        .status-badge { padding: 0.3rem 1.2rem; border-radius: 30px; font-size: 0.85rem; font-weight: bold; float: right; }
         .status-ok { background: #d1fae5; color: #065f46; }
         .status-review { background: #fee2e2; color: #991b1b; }
-        #loading { display: none; align-items: center; gap: 0.5rem; color: #3b82f6; }
+        .waveform-img { width: 100%; margin-top: 15px; border-radius: 8px; border: 1px solid #f1f5f9; }
+        #loading { display: none; align-items: center; gap: 0.5rem; color: #3b82f6; font-weight: bold; }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="card">
             <h1>🎧 Audio Sync Checker</h1>
-            <p class="subtitle">Upload reference audio and target tracks to detect timing mismatches.</p>
+            <p class="subtitle">Detect drift between original and dubbed audio renditions.</p>
             <div class="upload-section">
                 <div class="upload-box">
-                    <h3>📌 Reference</h3>
+                    <h3>📌 Reference (Master)</h3>
                     <label for="refFile" class="file-input-label">Choose File</label>
                     <input type="file" id="refFile" accept=".wav,.mp3,.m4a,.flac,.aac,.mp4">
-                    <div id="refFileList"></div>
+                    <div id="refFileList" style="margin-top: 10px; font-size: 0.9rem;"></div>
                 </div>
                 <div class="upload-box">
-                    <h3>🔁 Comparison</h3>
+                    <h3>🔁 Comparison (Dub)</h3>
                     <label for="compFiles" class="file-input-label">Choose Files</label>
                     <input type="file" id="compFiles" multiple accept=".wav,.mp3,.m4a,.flac,.aac,.mp4">
-                    <div id="compFileList"></div>
+                    <div id="compFileList" style="margin-top: 10px; font-size: 0.9rem;"></div>
                 </div>
             </div>
-            <div style="display: flex; justify-content: flex-end; margin-top: 2rem; gap: 1rem;">
-                <div id="loading">Processing...</div>
+            <div style="display: flex; justify-content: flex-end; margin-top: 2rem; gap: 1rem; align-items: center;">
+                <div id="loading">Processing Signal...</div>
                 <button class="primary-btn" id="checkBtn" onclick="uploadFiles()">▶ Check Sync</button>
             </div>
         </div>
@@ -64,7 +63,7 @@
         async function uploadFiles() {
             const refInput = document.getElementById('refFile');
             const compInput = document.getElementById('compFiles');
-            if (!refInput.files.length || !compInput.files.length) return alert('Select both reference and comparison files.');
+            if (!refInput.files.length || !compInput.files.length) return alert('Error: Source files incomplete.');
 
             const formData = new FormData();
             formData.append('reference', refInput.files[0]);
@@ -88,12 +87,20 @@
         function displayResults(data) {
             const div = document.getElementById('results');
             div.style.display = 'block';
-            let html = `<h2>Results for: ${data.reference}</h2><table><tr><th>File</th><th>Offset (ms)</th><th>Status</th></tr>`;
+            let html = `<h2 style="margin-bottom:1rem;">Analysis Report: ${data.reference}</h2>`;
+            
             data.results.forEach(r => {
                 const cls = r.needs_review ? 'status-review' : 'status-ok';
-                html += `<tr><td>${r.filename}</td><td>${r.offset_ms}</td><td><span class="status-badge ${cls}">${r.needs_review ? 'Review' : 'OK'}</span></td></tr>`;
+                const label = r.needs_review ? 'REVIEW REQUIRED' : 'SYNC OK';
+                html += `
+                    <div class="result-item">
+                        <span class="status-badge ${cls}">${label}</span>
+                        <p><strong>Target File:</strong> ${r.filename}</p>
+                        <p><strong>Temporal Drift:</strong> ${r.offset_ms} ms</p>
+                        <img class="waveform-img" src="data:image/png;base64,${r.visual}" alt="Waveform Comparison">
+                    </div>`;
             });
-            div.innerHTML = html + '</table>';
+            div.innerHTML = html;
         }
     </script>
 </body>
