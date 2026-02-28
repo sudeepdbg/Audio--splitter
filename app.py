@@ -1,15 +1,15 @@
 import os
-import tempfile
-from flask import Flask, request, jsonify, render_template, send_file
-import librosa
-import numpy as np
-from scipy import signal
 import uuid
+import tempfile
+import numpy as np
+import librosa
+from scipy import signal
+from flask import Flask, request, jsonify, render_template
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100 MB limit
 
-# Temporary storage for uploaded files (in memory)
+# Temporary folder for uploaded files
 UPLOAD_FOLDER = tempfile.mkdtemp()
 ALLOWED_EXTENSIONS = {'wav', 'mp3', 'm4a', 'flac', 'aac'}
 
@@ -18,8 +18,9 @@ def allowed_file(filename):
 
 def compute_offset(reference_path, test_path, sr=22050, hop_length=512, threshold_ms=50):
     """
-    Returns offset in ms and a boolean indicating if manual review is needed.
+    Compute time offset (in ms) between reference and test audio.
     Positive offset means test is delayed relative to reference.
+    Also returns a boolean indicating if manual review is needed (|offset| > threshold).
     """
     ref, _ = librosa.load(reference_path, sr=sr, mono=True)
     test, _ = librosa.load(test_path, sr=sr, mono=True)
@@ -38,10 +39,9 @@ def compute_offset(reference_path, test_path, sr=22050, hop_length=512, threshol
 
     # Cross-correlate
     correlation = signal.correlate(test_rms, ref_rms, mode='same')
-    lag = np.argmax(correlation) - len(ref_rms)//2
+    lag = np.argmax(correlation) - len(ref_rms) // 2
     offset_ms = lag * hop_length / sr * 1000
 
-    # Determine if manual validation is needed
     needs_review = abs(offset_ms) > threshold_ms
     return round(offset_ms, 2), needs_review
 
@@ -51,29 +51,47 @@ def index():
 
 @app.route('/upload', methods=['POST'])
 def upload_files():
-    if 'files[]' not in request.files:
-        return jsonify({'error': 'No files provided'}), 400
+    # Check that reference file is present
+    if 'reference' not in request.files:
+        return jsonify({'error': 'No reference file provided'}), 400
+    ref_file = request.files['reference']
 
-    files = request.files.getlist('files[]')
-    if len(files) < 2:
-        return jsonify({'error': 'Please upload at least two files'}), 400
+    # Check that comparison files are present
+    if 'comparison[]' not in request.files:
+        return jsonify({'error': 'No comparison files provided'}), 400
+    comp_files = request.files.getlist('comparison[]')
 
-    # Save uploaded files with unique names to avoid collisions
-    saved_paths = []
-    for file in files:
-        if file and allowed_file(file.filename):
-            ext = file.filename.rsplit('.', 1)[1].lower()
-            unique_name = f"{uuid.uuid4().hex}.{ext}"
-            save_path = os.path.join(UPLOAD_FOLDER, unique_name)
-            file.save(save_path)
-            saved_paths.append((file.filename, save_path))
-        else:
+    if ref_file.filename == '':
+        return jsonify({'error': 'Reference file is empty'}), 400
+    if len(comp_files) == 0:
+        return jsonify({'error': 'Please upload at least one comparison file'}), 400
+
+    # Validate reference file type
+    if not allowed_file(ref_file.filename):
+        return jsonify({'error': f'Reference file type not allowed: {ref_file.filename}'}), 400
+
+    # Save reference file with a unique name
+    ref_ext = ref_file.filename.rsplit('.', 1)[1].lower()
+    ref_unique = f"{uuid.uuid4().hex}.{ref_ext}"
+    ref_path = os.path.join(UPLOAD_FOLDER, ref_unique)
+    ref_file.save(ref_path)
+
+    # Save comparison files, validating each
+    saved_paths = [(ref_file.filename, ref_path)]  # reference first
+    for file in comp_files:
+        if file.filename == '':
+            continue
+        if not allowed_file(file.filename):
             return jsonify({'error': f'File type not allowed: {file.filename}'}), 400
+        ext = file.filename.rsplit('.', 1)[1].lower()
+        unique = f"{uuid.uuid4().hex}.{ext}"
+        path = os.path.join(UPLOAD_FOLDER, unique)
+        file.save(path)
+        saved_paths.append((file.filename, path))
 
-    # Use the first file as reference
+    # Compute offsets for each comparison file against the reference
     ref_filename, ref_path = saved_paths[0]
     results = []
-
     for filename, path in saved_paths[1:]:
         offset_ms, needs_review = compute_offset(ref_path, path)
         results.append({
@@ -82,8 +100,8 @@ def upload_files():
             'needs_review': needs_review
         })
 
-    # Clean up temporary files (optional – you can keep them for download)
-    # We'll keep them for now; you may add a cleanup later.
+    # Optional: clean up temporary files after processing?
+    # For a POC, you might keep them or implement a cleanup strategy.
 
     return jsonify({
         'reference': ref_filename,
@@ -91,4 +109,5 @@ def upload_files():
     })
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    # Use port 5001 to avoid AirPlay conflict on macOS
+    app.run(debug=True, port=5001)
