@@ -1,53 +1,49 @@
 import os
 import uuid
 import shutil
-import tempfile
 import numpy as np
 import librosa
 import librosa.display
 import matplotlib
-matplotlib.use('Agg')  # Required for server-side rendering
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import base64
 from io import BytesIO
 import traceback
-import acoustid # Requires: pip install pyacoustid
+import acoustid
+import subprocess
 from scipy import signal
 from flask import Flask, request, jsonify, render_template
 
-# CRITICAL FOR MACOS: Pointing the app to the Homebrew fpcalc binary
-os.environ["FPCALC_PATH"] = "/opt/homebrew/bin/fpcalc"
-
 app = Flask(__name__)
 
-# CONFIGURATION: Supporting high-res files (up to 500MB)
+# CONFIGURATION
 app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024 
 app.config['MAX_FORM_MEMORY_SIZE'] = 500 * 1024 * 1024
 
-MEDIA_VOLATILE_PATH = tempfile.gettempdir()
+# Using a local folder in your project to avoid macOS sandbox/temp permissions
+MEDIA_VOLATILE_PATH = os.path.join(os.getcwd(), "temp_uploads")
+os.makedirs(MEDIA_VOLATILE_PATH, exist_ok=True)
+
 SUPPORTED_CONTAINERS = {'wav', 'mp3', 'm4a', 'flac', 'aac', 'mp4'}
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in SUPPORTED_CONTAINERS
 
 def generate_visual_comparison(anchor_y, rendition_y, drift_ms, match_score, sr):
-    """Generates a base64 encoded waveform comparison image."""
     plt.figure(figsize=(10, 5), facecolor='#f8fafc')
     
-    # Anchor Waveform
     plt.subplot(2, 1, 1)
     librosa.display.waveshow(anchor_y, sr=sr, alpha=0.6, color='#3b82f6')
     plt.title(f"Sync: {drift_ms}ms | Content Integrity: {match_score}%", fontsize=10)
     plt.ylabel("Reference")
     plt.xticks([]) 
     
-    # Rendition Waveform
     plt.subplot(2, 1, 2)
     librosa.display.waveshow(rendition_y, sr=sr, alpha=0.6, color='#f59e0b')
     plt.ylabel("Comparison")
     
     plt.tight_layout()
-    
     buf = BytesIO()
     plt.savefig(buf, format='png', bbox_inches='tight', dpi=100)
     plt.close()
@@ -55,42 +51,40 @@ def generate_visual_comparison(anchor_y, rendition_y, drift_ms, match_score, sr)
 
 def analyze_temporal_drift(anchor_path, rendition_path, sr=22050, hop_length=512, delta_threshold_ms=50):
     try:
-        # 1. PRE-CHECK: Get Durations to avoid AcoustID errors
         dur_a = librosa.get_duration(path=anchor_path)
         dur_b = librosa.get_duration(path=rendition_path)
-        
         match_score = 0.0
-        
-        # Chromaprint needs at least 2 seconds of audio to work correctly
+
         if dur_a >= 2.0 and dur_b >= 2.0:
             try:
-                # 2. Chromaprint Content Integrity Check
-                # fingerprint_file returns (duration, fingerprint_bytes)
-                _, fp_a = acoustid.fingerprint_file(anchor_path)
-                _, fp_b = acoustid.fingerprint_file(rendition_path)
-                
-                # compare_fingerprints returns a float between 0 and 1
-                match_score = round(acoustid.compare_fingerprints(fp_a, fp_b) * 100, 2)
-            except Exception as fp_err:
-                # Log specific errors to terminal for debugging
-                print(f"DEBUG: Fingerprinting failed: {fp_err}")
-                match_score = 0.0
-        else:
-            print(f"Skipping fingerprinting: Files too short (Ref: {dur_a}s, Comp: {dur_b}s)")
+                # Direct system call to fpcalc (matches your successful terminal test)
+                def get_fp_raw(path):
+                    # We use -plain to get the string only
+                    proc = subprocess.run(
+                        ["/opt/homebrew/bin/fpcalc", "-plain", path], 
+                        capture_output=True, text=True, check=True
+                    )
+                    return proc.stdout.strip()
 
-        # 3. Signal Processing for Drift
-        # Loading first 60s for speed and to avoid memory timeout
+                fp_a = get_fp_raw(anchor_path)
+                fp_b = get_fp_raw(rendition_path)
+
+                if fp_a and fp_b:
+                    # Compare using the chromaprint DNA strings
+                    match_score = round(acoustid.compare_fingerprints(fp_a, fp_b) * 100, 2)
+            except Exception as fp_err:
+                print(f"Fingerprint Engine Error: {fp_err}")
+
+        # Signal Processing for Drift
         anchor_buffer, _ = librosa.load(anchor_path, sr=sr, mono=True, duration=60)
         rendition_buffer, _ = librosa.load(rendition_path, sr=sr, mono=True, duration=60)
         
         a_trimmed, _ = librosa.effects.trim(anchor_buffer)
         r_trimmed, _ = librosa.effects.trim(rendition_buffer)
         
-        # Envelope Cross-Correlation
         anchor_env = librosa.feature.rms(y=a_trimmed, hop_length=hop_length)[0]
         rendition_env = librosa.feature.rms(y=r_trimmed, hop_length=hop_length)[0]
         
-        # Standardize Envelopes for comparison
         anchor_env = (anchor_env - anchor_env.min()) / (anchor_env.max() - anchor_env.min() + 1e-10)
         rendition_env = (rendition_env - rendition_env.min()) / (rendition_env.max() - rendition_env.min() + 1e-10)
         
@@ -98,17 +92,14 @@ def analyze_temporal_drift(anchor_path, rendition_path, sr=22050, hop_length=512
         lag_frame = np.argmax(correlation) - len(anchor_env) // 2
         drift_ms = round(float(lag_frame * hop_length / sr * 1000), 2)
         
-        # Logic: Flag if drift is significant OR if content match is very low (<40%)
         validation_flag = bool(abs(drift_ms) > delta_threshold_ms or match_score < 40)
+        viz = generate_visual_comparison(anchor_buffer[:sr*15], rendition_buffer[:sr*15], drift_ms, match_score, sr)
         
-        # Generate visual for the first 15 seconds
-        waveform_b64 = generate_visual_comparison(anchor_buffer[:sr*15], rendition_buffer[:sr*15], drift_ms, match_score, sr)
-        
-        return drift_ms, validation_flag, waveform_b64, match_score
+        return drift_ms, validation_flag, viz, match_score
 
     except Exception as e:
         traceback.print_exc()
-        raise Exception(f"Signal processing failure: {str(e)}")
+        raise Exception(f"Analysis failed: {str(e)}")
 
 @app.route('/')
 def index():
@@ -116,30 +107,25 @@ def index():
 
 @app.route('/upload', methods=['POST'])
 def upload_files():
-    session_id = f"PROBE_{uuid.uuid4().hex[:8].upper()}"
+    session_id = f"SESSION_{uuid.uuid4().hex[:6].upper()}"
     analysis_root = os.path.join(MEDIA_VOLATILE_PATH, session_id)
     os.makedirs(analysis_root, exist_ok=True)
     
     try:
-        if 'reference' not in request.files or 'comparison[]' not in request.files:
-            return jsonify({'error': 'Missing files'}), 400
-            
         anchor_track = request.files['reference']
-        rendition_tracks = [f for f in request.files.getlist('comparison[]') if f.filename != '']
+        rendition_tracks = request.files.getlist('comparison[]')
 
-        anchor_path = os.path.join(analysis_root, f"ANCHOR_{anchor_track.filename}")
+        anchor_path = os.path.join(analysis_root, anchor_track.filename)
         anchor_track.save(anchor_path)
 
-        analysis_report = []
+        results = []
         for track in rendition_tracks:
-            if allowed_file(track.filename):
-                r_path = os.path.join(analysis_root, f"RENDITION_{track.filename}")
+            if track.filename and allowed_file(track.filename):
+                r_path = os.path.join(analysis_root, track.filename)
                 track.save(r_path)
                 
-                # Execute analysis with length-safe logic
                 drift, needs_val, viz, score = analyze_temporal_drift(anchor_path, r_path)
-                
-                analysis_report.append({
+                results.append({
                     'filename': track.filename,
                     'offset_ms': drift,
                     'match_confidence': score,
@@ -147,13 +133,9 @@ def upload_files():
                     'visual': viz
                 })
 
-        return jsonify({'reference': anchor_track.filename, 'results': analysis_report})
-    except Exception as e:
-        traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'reference': anchor_track.filename, 'results': results})
     finally:
         shutil.rmtree(analysis_root, ignore_errors=True)
 
 if __name__ == '__main__':
-    # Running on port 5001 to avoid default macOS AirPlay conflicts
     app.run(debug=True, host='0.0.0.0', port=5001)
