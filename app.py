@@ -1,6 +1,7 @@
 import os
 import uuid
 import shutil
+import hashlib
 import numpy as np
 import librosa
 import librosa.display
@@ -21,7 +22,7 @@ app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024 
 app.config['MAX_FORM_MEMORY_SIZE'] = 500 * 1024 * 1024
 
-# Create a 'data' folder in your project directory for stable permissions
+# Create a 'data' folder for stable permissions
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MEDIA_VOLATILE_PATH = os.path.join(BASE_DIR, "data")
 if not os.path.exists(MEDIA_VOLATILE_PATH):
@@ -29,8 +30,27 @@ if not os.path.exists(MEDIA_VOLATILE_PATH):
 
 SUPPORTED_CONTAINERS = {'wav', 'mp3', 'm4a', 'flac', 'aac', 'mp4'}
 
+# In-memory cache for fingerprints to speed up multi-file analysis
+FINGERPRINT_CACHE = {}
+
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in SUPPORTED_CONTAINERS
+
+def get_efficient_fingerprint(file_path):
+    """Calculates or retrieves a cached fingerprint using a file hash."""
+    # Hash the first 1MB of the file for a quick unique ID
+    with open(file_path, 'rb') as f:
+        file_hash = hashlib.md5(f.read(1024*1024)).hexdigest()
+    
+    if file_hash in FINGERPRINT_CACHE:
+        return FINGERPRINT_CACHE[file_hash]
+    
+    # Generate fresh if not in cache using the verified shell path
+    cmd = f"/opt/homebrew/bin/fpcalc -plain '{file_path}'"
+    fp = subprocess.check_output(cmd, shell=True, timeout=30).decode().strip()
+    
+    FINGERPRINT_CACHE[file_hash] = fp
+    return fp
 
 def generate_visual_comparison(anchor_y, rendition_y, drift_ms, match_score, sr):
     plt.figure(figsize=(10, 5), facecolor='#f8fafc')
@@ -48,53 +68,64 @@ def generate_visual_comparison(anchor_y, rendition_y, drift_ms, match_score, sr)
     plt.close()
     return base64.b64encode(buf.getvalue()).decode('utf-8')
 
-def analyze_temporal_drift(anchor_path, rendition_path, sr=22050, hop_length=512, delta_threshold_ms=50):
+def analyze_temporal_drift(anchor_path, rendition_path, sr=22050, hop_length=512):
     try:
         abs_anchor = os.path.abspath(anchor_path)
         abs_rendition = os.path.abspath(rendition_path)
-        match_score = 0.0
-
-        # Fingerprinting via Shell (Proven to work in your terminal)
+        
+        # 1. ENHANCED FINGERPRINTING & CACHING
         try:
-            cmd_a = f"/opt/homebrew/bin/fpcalc -plain '{abs_anchor}'"
-            cmd_b = f"/opt/homebrew/bin/fpcalc -plain '{abs_rendition}'"
+            fp_a = get_efficient_fingerprint(abs_anchor)
+            fp_b = get_efficient_fingerprint(abs_rendition)
             
-            # Use check_output and .decode() to ensure we get a string, not bytes
-            fp_a = subprocess.check_output(cmd_a, shell=True).decode().strip()
-            fp_b = subprocess.check_output(cmd_b, shell=True).decode().strip()
-
-            if fp_a and fp_b:
-                # Failsafe: If DNA is identical, it's 100%
-                if fp_a == fp_b:
-                    match_score = 100.0
-                else:
-                    match_score = round(acoustid.compare_fingerprints(fp_a, fp_b) * 100, 2)
-            else:
-                print("DEBUG: One or both fingerprints are empty strings")
+            raw_match = acoustid.compare_fingerprints(fp_a, fp_b)
+            match_score = round(raw_match * 100, 2)
+            
+            # Failsafe for identical files
+            if fp_a == fp_b:
+                match_score = 100.0
         except Exception as fp_err:
-            print(f"DEBUG: Shell Fingerprinting failed: {fp_err}")
+            print(f"DEBUG Fingerprint Error: {fp_err}")
+            match_score = 0.0
 
-        # Signal Processing for Drift
+        # 2. MEMORY-EFFICIENT LOADING (First 60s only)
         anchor_buffer, _ = librosa.load(abs_anchor, sr=sr, mono=True, duration=60)
         rendition_buffer, _ = librosa.load(abs_rendition, sr=sr, mono=True, duration=60)
         
         a_trimmed, _ = librosa.effects.trim(anchor_buffer)
         r_trimmed, _ = librosa.effects.trim(rendition_buffer)
         
+        # 3. SIGNAL PROCESSING (RMS Envelopes)
         anchor_env = librosa.feature.rms(y=a_trimmed, hop_length=hop_length)[0]
         rendition_env = librosa.feature.rms(y=r_trimmed, hop_length=hop_length)[0]
         
+        # Normalize
         anchor_env = (anchor_env - anchor_env.min()) / (anchor_env.max() - anchor_env.min() + 1e-10)
         rendition_env = (rendition_env - rendition_env.min()) / (rendition_env.max() - rendition_env.min() + 1e-10)
         
+        # Cross-Correlation for Lag detection
         correlation = signal.correlate(rendition_env, anchor_env, mode='same')
         lag_frame = np.argmax(correlation) - len(anchor_env) // 2
         drift_ms = round(float(lag_frame * hop_length / sr * 1000), 2)
         
-        validation_flag = bool(abs(drift_ms) > delta_threshold_ms or match_score < 40)
+        # 4. NUANCED VALIDATION LOGIC
+        issues = []
+        if abs(drift_ms) > 100:
+            issues.append("Severe desync (>100ms)")
+        elif abs(drift_ms) > 50:
+            issues.append("Minor desync (50-100ms)")
+            
+        if match_score < 30:
+            issues.append("Content mismatch - wrong dub?")
+        elif match_score < 60:
+            issues.append("Low confidence match")
+            
+        validation_flag = len(issues) > 0
+        
         viz = generate_visual_comparison(anchor_buffer[:sr*15], rendition_buffer[:sr*15], drift_ms, match_score, sr)
         
-        return drift_ms, validation_flag, viz, match_score
+        return drift_ms, validation_flag, viz, match_score, issues
+
     except Exception as e:
         traceback.print_exc()
         raise Exception(f"Analysis failed: {str(e)}")
@@ -106,13 +137,16 @@ def index():
 @app.route('/clear_cache', methods=['POST'])
 def clear_cache():
     try:
+        # Clear physical files
         for item in os.listdir(MEDIA_VOLATILE_PATH):
             item_path = os.path.join(MEDIA_VOLATILE_PATH, item)
             if os.path.isdir(item_path):
                 shutil.rmtree(item_path)
             else:
                 os.remove(item_path)
-        return jsonify({'status': 'Cache cleared successfully'})
+        # Clear memory cache
+        FINGERPRINT_CACHE.clear()
+        return jsonify({'status': 'Cache and Memory cleared successfully'})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -134,17 +168,21 @@ def upload_files():
             if track.filename and allowed_file(track.filename):
                 r_path = os.path.join(analysis_root, track.filename)
                 track.save(r_path)
-                drift, needs_val, viz, score = analyze_temporal_drift(anchor_path, r_path)
+                
+                # Unpack the new return values including the 'issues' list
+                drift, needs_val, viz, score, issues = analyze_temporal_drift(anchor_path, r_path)
+                
                 results.append({
-                    'filename': track.filename, 'offset_ms': drift,
-                    'match_confidence': score, 'needs_review': needs_val, 'visual': viz
+                    'filename': track.filename, 
+                    'offset_ms': drift,
+                    'match_confidence': score, 
+                    'needs_review': needs_val, 
+                    'visual': viz,
+                    'issues': issues
                 })
         return jsonify({'reference': anchor_track.filename, 'results': results})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
-    finally:
-        # We don't rmtree here anymore to ensure fpcalc has access during execution
-        pass
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5001)
