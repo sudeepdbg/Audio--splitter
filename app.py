@@ -15,7 +15,7 @@ from scipy import signal
 from flask import Flask, request, jsonify, render_template
 
 app = Flask(__name__)
-app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024 
+app.config['MAX_CONTENT_LENGTH'] = 150 * 1024 * 1024 
 
 MEDIA_VOLATILE_PATH = tempfile.gettempdir()
 SUPPORTED_CONTAINERS = {'wav', 'mp3', 'm4a', 'flac', 'aac', 'mp4'}
