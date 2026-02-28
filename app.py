@@ -21,9 +21,11 @@ app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024 
 app.config['MAX_FORM_MEMORY_SIZE'] = 500 * 1024 * 1024
 
-# Using a local folder in your project to avoid macOS sandbox/temp permissions
-MEDIA_VOLATILE_PATH = os.path.join(os.getcwd(), "temp_uploads")
-os.makedirs(MEDIA_VOLATILE_PATH, exist_ok=True)
+# Create a 'data' folder in your project directory for stable permissions
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MEDIA_VOLATILE_PATH = os.path.join(BASE_DIR, "data")
+if not os.path.exists(MEDIA_VOLATILE_PATH):
+    os.makedirs(MEDIA_VOLATILE_PATH)
 
 SUPPORTED_CONTAINERS = {'wav', 'mp3', 'm4a', 'flac', 'aac', 'mp4'}
 
@@ -32,17 +34,14 @@ def allowed_file(filename):
 
 def generate_visual_comparison(anchor_y, rendition_y, drift_ms, match_score, sr):
     plt.figure(figsize=(10, 5), facecolor='#f8fafc')
-    
     plt.subplot(2, 1, 1)
     librosa.display.waveshow(anchor_y, sr=sr, alpha=0.6, color='#3b82f6')
     plt.title(f"Sync: {drift_ms}ms | Content Integrity: {match_score}%", fontsize=10)
     plt.ylabel("Reference")
     plt.xticks([]) 
-    
     plt.subplot(2, 1, 2)
     librosa.display.waveshow(rendition_y, sr=sr, alpha=0.6, color='#f59e0b')
     plt.ylabel("Comparison")
-    
     plt.tight_layout()
     buf = BytesIO()
     plt.savefig(buf, format='png', bbox_inches='tight', dpi=100)
@@ -51,33 +50,26 @@ def generate_visual_comparison(anchor_y, rendition_y, drift_ms, match_score, sr)
 
 def analyze_temporal_drift(anchor_path, rendition_path, sr=22050, hop_length=512, delta_threshold_ms=50):
     try:
-        dur_a = librosa.get_duration(path=anchor_path)
-        dur_b = librosa.get_duration(path=rendition_path)
+        abs_anchor = os.path.abspath(anchor_path)
+        abs_rendition = os.path.abspath(rendition_path)
         match_score = 0.0
 
-        if dur_a >= 2.0 and dur_b >= 2.0:
-            try:
-                # Direct system call to fpcalc (matches your successful terminal test)
-                def get_fp_raw(path):
-                    # We use -plain to get the string only
-                    proc = subprocess.run(
-                        ["/opt/homebrew/bin/fpcalc", "-plain", path], 
-                        capture_output=True, text=True, check=True
-                    )
-                    return proc.stdout.strip()
+        # Fingerprinting via Shell (Proven to work in your terminal)
+        try:
+            cmd_a = f"/opt/homebrew/bin/fpcalc -plain '{abs_anchor}'"
+            cmd_b = f"/opt/homebrew/bin/fpcalc -plain '{abs_rendition}'"
+            
+            fp_a = subprocess.check_output(cmd_a, shell=True, text=True).strip()
+            fp_b = subprocess.parse_output = subprocess.check_output(cmd_b, shell=True, text=True).strip()
 
-                fp_a = get_fp_raw(anchor_path)
-                fp_b = get_fp_raw(rendition_path)
-
-                if fp_a and fp_b:
-                    # Compare using the chromaprint DNA strings
-                    match_score = round(acoustid.compare_fingerprints(fp_a, fp_b) * 100, 2)
-            except Exception as fp_err:
-                print(f"Fingerprint Engine Error: {fp_err}")
+            if fp_a and fp_b:
+                match_score = round(acoustid.compare_fingerprints(fp_a, fp_b) * 100, 2)
+        except Exception as fp_err:
+            print(f"DEBUG: Shell Fingerprinting failed: {fp_err}")
 
         # Signal Processing for Drift
-        anchor_buffer, _ = librosa.load(anchor_path, sr=sr, mono=True, duration=60)
-        rendition_buffer, _ = librosa.load(rendition_path, sr=sr, mono=True, duration=60)
+        anchor_buffer, _ = librosa.load(abs_anchor, sr=sr, mono=True, duration=60)
+        rendition_buffer, _ = librosa.load(abs_rendition, sr=sr, mono=True, duration=60)
         
         a_trimmed, _ = librosa.effects.trim(anchor_buffer)
         r_trimmed, _ = librosa.effects.trim(rendition_buffer)
@@ -96,7 +88,6 @@ def analyze_temporal_drift(anchor_path, rendition_path, sr=22050, hop_length=512
         viz = generate_visual_comparison(anchor_buffer[:sr*15], rendition_buffer[:sr*15], drift_ms, match_score, sr)
         
         return drift_ms, validation_flag, viz, match_score
-
     except Exception as e:
         traceback.print_exc()
         raise Exception(f"Analysis failed: {str(e)}")
@@ -105,9 +96,22 @@ def analyze_temporal_drift(anchor_path, rendition_path, sr=22050, hop_length=512
 def index():
     return render_template('index.html')
 
+@app.route('/clear_cache', methods=['POST'])
+def clear_cache():
+    try:
+        for item in os.listdir(MEDIA_VOLATILE_PATH):
+            item_path = os.path.join(MEDIA_VOLATILE_PATH, item)
+            if os.path.isdir(item_path):
+                shutil.rmtree(item_path)
+            else:
+                os.remove(item_path)
+        return jsonify({'status': 'Cache cleared successfully'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/upload', methods=['POST'])
 def upload_files():
-    session_id = f"SESSION_{uuid.uuid4().hex[:6].upper()}"
+    session_id = f"SES_{uuid.uuid4().hex[:6].upper()}"
     analysis_root = os.path.join(MEDIA_VOLATILE_PATH, session_id)
     os.makedirs(analysis_root, exist_ok=True)
     
@@ -123,19 +127,14 @@ def upload_files():
             if track.filename and allowed_file(track.filename):
                 r_path = os.path.join(analysis_root, track.filename)
                 track.save(r_path)
-                
                 drift, needs_val, viz, score = analyze_temporal_drift(anchor_path, r_path)
                 results.append({
-                    'filename': track.filename,
-                    'offset_ms': drift,
-                    'match_confidence': score,
-                    'needs_review': needs_val,
-                    'visual': viz
+                    'filename': track.filename, 'offset_ms': drift,
+                    'match_confidence': score, 'needs_review': needs_val, 'visual': viz
                 })
-
         return jsonify({'reference': anchor_track.filename, 'results': results})
-    finally:
-        shutil.rmtree(analysis_root, ignore_errors=True)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5001)
