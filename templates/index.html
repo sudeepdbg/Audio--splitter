@@ -24,6 +24,8 @@
         .primary-btn:hover { background: #1d4ed8; }
         .primary-btn:active { transform: scale(0.98); }
         .primary-btn:disabled { background: #94a3b8; cursor: not-allowed; }
+        .secondary-btn { background: #64748b; color: white; border: none; border-radius: 40px; padding: 0.9rem 1.8rem; font-weight: 600; cursor: pointer; transition: background 0.2s; }
+        .secondary-btn:hover { background: #475569; }
 
         /* Results Styling */
         .result-item { background: white; border: 1px solid #e2e8f0; border-radius: 16px; padding: 2rem; margin-top: 2rem; }
@@ -71,8 +73,9 @@
                 </div>
             </div>
 
-            <div style="display: flex; justify-content: flex-end; margin-top: 2.5rem; gap: 1.5rem; align-items: center;">
+            <div style="display: flex; justify-content: flex-end; margin-top: 2.5rem; gap: 1rem; align-items: center;">
                 <div id="loading"><div class="spinner"></div> Analysing Signals...</div>
+                <button class="secondary-btn" onclick="clearCache()">🗑 Clear Cache</button>
                 <button class="primary-btn" id="checkBtn" onclick="uploadFiles()">▶ Check Sync</button>
             </div>
         </div>
@@ -88,29 +91,37 @@
             document.getElementById('compFileList').innerText = `${this.files.length} track(s) ready for analysis`;
         });
 
+        async function clearCache() {
+            if (!confirm("Are you sure you want to delete all temporary upload data?")) return;
+            try {
+                const res = await fetch('/clear_cache', { method: 'POST' });
+                const data = await res.json();
+                alert(data.status || data.error);
+                location.reload(); 
+            } catch (e) {
+                alert("Failed to reach server to clear cache.");
+            }
+        }
+
         async function uploadFiles() {
             const refInput = document.getElementById('refFile');
             const compInput = document.getElementById('compFiles');
             
-            // Validation: File Selection
             if (!refInput.files.length || !compInput.files.length) {
                 return alert('Input Required: Please select both a Master and at least one Comparison file.');
             }
 
-            // Validation: Empty File Check (Fail Fast)
-            const minSize = 1024; // Require at least 1KB
+            const minSize = 1024; 
             if (refInput.files[0].size < minSize) {
-                return alert(`Error: Reference file "${refInput.files[0].name}" appears to be empty or corrupted.`);
-            }
-            for (let f of compInput.files) {
-                if (f.size < minSize) {
-                    return alert(`Error: Comparison file "${f.name}" is too small/empty.`);
-                }
+                return alert(`Error: Reference file "${refInput.files[0].name}" is too small/empty.`);
             }
 
             const formData = new FormData();
             formData.append('reference', refInput.files[0]);
-            for (let f of compInput.files) formData.append('comparison[]', f);
+            for (let f of compInput.files) {
+                if (f.size < minSize) continue; // Skip empty files in batch
+                formData.append('comparison[]', f);
+            }
 
             document.getElementById('loading').style.display = 'flex';
             document.getElementById('checkBtn').disabled = true;
@@ -120,7 +131,7 @@
                 const res = await fetch('/upload', { method: 'POST', body: formData });
                 if (!res.ok) {
                     const errorData = await res.json();
-                    throw new Error(errorData.error || 'Server rejected the request (check file sizes)');
+                    throw new Error(errorData.error || 'Server Error');
                 }
                 const data = await res.json();
                 displayResults(data);
