@@ -17,7 +17,7 @@ from flask import Flask, request, jsonify, render_template
 
 app = Flask(__name__)
 
-# CONFIGURATION: Supporting high-res files and preventing 413 errors
+# CONFIGURATION: Supporting high-res files (up to 500MB)
 app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024 
 app.config['MAX_FORM_MEMORY_SIZE'] = 500 * 1024 * 1024
 
@@ -52,12 +52,29 @@ def generate_visual_comparison(anchor_y, rendition_y, drift_ms, match_score, sr)
 
 def analyze_temporal_drift(anchor_path, rendition_path, sr=22050, hop_length=512, delta_threshold_ms=50):
     try:
-        # 1. Chromaprint Content Integrity Check
-        _, fp_a = acoustid.fingerprint_file(anchor_path)
-        _, fp_b = acoustid.fingerprint_file(rendition_path)
-        match_score = round(acoustid.compare_fingerprints(fp_a, fp_b) * 100, 2)
+        # 1. PRE-CHECK: Get Durations to avoid AcoustID errors
+        dur_a = librosa.get_duration(path=anchor_path)
+        dur_b = librosa.get_duration(path=rendition_path)
+        
+        match_score = 0.0
+        
+        # Chromaprint needs at least 2 seconds of audio to work correctly
+        if dur_a >= 2.0 and dur_b >= 2.0:
+            try:
+                # 2. Chromaprint Content Integrity Check
+                # fingerprint_file returns (duration, fingerprint_bytes)
+                _, fp_a = acoustid.fingerprint_file(anchor_path)
+                _, fp_b = acoustid.fingerprint_file(rendition_path)
+                
+                # compare_fingerprints returns a float between 0 and 1
+                match_score = round(acoustid.compare_fingerprints(fp_a, fp_b) * 100, 2)
+            except Exception as fp_err:
+                print(f"Fingerprint generation failed: {fp_err}")
+                match_score = 0.0
+        else:
+            print(f"Skipping fingerprinting: Files too short (Ref: {dur_a}s, Comp: {dur_b}s)")
 
-        # 2. Signal Processing for Drift
+        # 3. Signal Processing for Drift
         # Loading first 60s for speed and to avoid memory timeout
         anchor_buffer, _ = librosa.load(anchor_path, sr=sr, mono=True, duration=60)
         rendition_buffer, _ = librosa.load(rendition_path, sr=sr, mono=True, duration=60)
@@ -69,6 +86,7 @@ def analyze_temporal_drift(anchor_path, rendition_path, sr=22050, hop_length=512
         anchor_env = librosa.feature.rms(y=a_trimmed, hop_length=hop_length)[0]
         rendition_env = librosa.feature.rms(y=r_trimmed, hop_length=hop_length)[0]
         
+        # Standardize Envelopes for comparison
         anchor_env = (anchor_env - anchor_env.min()) / (anchor_env.max() - anchor_env.min() + 1e-10)
         rendition_env = (rendition_env - rendition_env.min()) / (rendition_env.max() - rendition_env.min() + 1e-10)
         
@@ -76,13 +94,14 @@ def analyze_temporal_drift(anchor_path, rendition_path, sr=22050, hop_length=512
         lag_frame = np.argmax(correlation) - len(anchor_env) // 2
         drift_ms = round(float(lag_frame * hop_length / sr * 1000), 2)
         
-        # Logic: If content match is very low, the drift calculation is likely irrelevant
+        # Logic: Flag if drift is significant OR if content match is very low (<40%)
         validation_flag = bool(abs(drift_ms) > delta_threshold_ms or match_score < 40)
         
         # Generate visual for the first 15 seconds
         waveform_b64 = generate_visual_comparison(anchor_buffer[:sr*15], rendition_buffer[:sr*15], drift_ms, match_score, sr)
         
         return drift_ms, validation_flag, waveform_b64, match_score
+
     except Exception as e:
         traceback.print_exc()
         raise Exception(f"Signal processing failure: {str(e)}")
@@ -113,6 +132,7 @@ def upload_files():
                 r_path = os.path.join(analysis_root, f"RENDITION_{track.filename}")
                 track.save(r_path)
                 
+                # Execute analysis with length-safe logic
                 drift, needs_val, viz, score = analyze_temporal_drift(anchor_path, r_path)
                 
                 analysis_report.append({
