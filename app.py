@@ -15,6 +15,9 @@ import acoustid # Requires: pip install pyacoustid
 from scipy import signal
 from flask import Flask, request, jsonify, render_template
 
+# CRITICAL FOR MACOS: Pointing the app to the Homebrew fpcalc binary
+os.environ["FPCALC_PATH"] = "/opt/homebrew/bin/fpcalc"
+
 app = Flask(__name__)
 
 # CONFIGURATION: Supporting high-res files (up to 500MB)
@@ -69,7 +72,8 @@ def analyze_temporal_drift(anchor_path, rendition_path, sr=22050, hop_length=512
                 # compare_fingerprints returns a float between 0 and 1
                 match_score = round(acoustid.compare_fingerprints(fp_a, fp_b) * 100, 2)
             except Exception as fp_err:
-                print(f"Fingerprint generation failed: {fp_err}")
+                # Log specific errors to terminal for debugging
+                print(f"DEBUG: Fingerprinting failed: {fp_err}")
                 match_score = 0.0
         else:
             print(f"Skipping fingerprinting: Files too short (Ref: {dur_a}s, Comp: {dur_b}s)")
@@ -151,4 +155,5 @@ def upload_files():
         shutil.rmtree(analysis_root, ignore_errors=True)
 
 if __name__ == '__main__':
+    # Running on port 5001 to avoid default macOS AirPlay conflicts
     app.run(debug=True, host='0.0.0.0', port=5001)
