@@ -4,6 +4,12 @@ import shutil
 import tempfile
 import numpy as np
 import librosa
+import librosa.display
+import matplotlib
+matplotlib.use('Agg')  # Required for server-side rendering without a display
+import matplotlib.pyplot as plt
+import base64
+from io import BytesIO
 import traceback
 from scipy import signal
 from flask import Flask, request, jsonify, render_template
@@ -17,27 +23,55 @@ SUPPORTED_CONTAINERS = {'wav', 'mp3', 'm4a', 'flac', 'aac', 'mp4'}
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in SUPPORTED_CONTAINERS
 
+def generate_visual_comparison(anchor_y, rendition_y, drift_ms, sr):
+    """Generates a base64 encoded waveform comparison image."""
+    plt.figure(figsize=(10, 4), facecolor='#f8fafc')
+    
+    # Anchor Waveform
+    plt.subplot(2, 1, 1)
+    librosa.display.waveshow(anchor_y, sr=sr, alpha=0.6, color='#3b82f6')
+    plt.title(f"Temporal Alignment (Calculated Drift: {drift_ms}ms)", fontsize=10)
+    plt.ylabel("Anchor")
+    plt.xticks([]) # Hide x-axis for top plot
+    
+    # Rendition Waveform
+    plt.subplot(2, 1, 2)
+    librosa.display.waveshow(rendition_y, sr=sr, alpha=0.6, color='#f59e0b')
+    plt.ylabel("Rendition")
+    
+    plt.tight_layout()
+    
+    buf = BytesIO()
+    plt.savefig(buf, format='png', bbox_inches='tight')
+    plt.close()
+    return base64.b64encode(buf.getvalue()).decode('utf-8')
+
 def analyze_temporal_drift(anchor_path, rendition_path, sr=22050, hop_length=512, delta_threshold_ms=50):
     try:
+        # Load and trim
         anchor_buffer, _ = librosa.load(anchor_path, sr=sr, mono=True)
         rendition_buffer, _ = librosa.load(rendition_path, sr=sr, mono=True)
         
-        anchor_buffer, _ = librosa.effects.trim(anchor_buffer)
-        rendition_buffer, _ = librosa.effects.trim(rendition_buffer)
+        a_trimmed, _ = librosa.effects.trim(anchor_buffer)
+        r_trimmed, _ = librosa.effects.trim(rendition_buffer)
         
-        anchor_env = librosa.feature.rms(y=anchor_buffer, hop_length=hop_length)[0]
-        rendition_env = librosa.feature.rms(y=rendition_buffer, hop_length=hop_length)[0]
+        # Envelope Cross-Correlation
+        anchor_env = librosa.feature.rms(y=a_trimmed, hop_length=hop_length)[0]
+        rendition_env = librosa.feature.rms(y=r_trimmed, hop_length=hop_length)[0]
         
         anchor_env = (anchor_env - anchor_env.min()) / (anchor_env.max() - anchor_env.min() + 1e-10)
         rendition_env = (rendition_env - rendition_env.min()) / (rendition_env.max() - rendition_env.min() + 1e-10)
         
         correlation = signal.correlate(rendition_env, anchor_env, mode='same')
         lag_frame = np.argmax(correlation) - len(anchor_env) // 2
-        drift_ms = lag_frame * hop_length / sr * 1000
+        drift_ms = round(float(lag_frame * hop_length / sr * 1000), 2)
         
-        # THE FIX: Cast to standard Python bool so JSON can handle it
         validation_flag = bool(abs(drift_ms) > delta_threshold_ms)
-        return round(float(drift_ms), 2), validation_flag
+        
+        # Generate visual for the first 20 seconds
+        waveform_b64 = generate_visual_comparison(anchor_buffer[:sr*20], rendition_buffer[:sr*20], drift_ms, sr)
+        
+        return drift_ms, validation_flag, waveform_b64
     except Exception as e:
         traceback.print_exc()
         raise Exception(f"Signal processing failure: {str(e)}")
@@ -65,18 +99,18 @@ def upload_files():
         analysis_report = []
         for track in rendition_tracks:
             if allowed_file(track.filename):
-                rendition_path = os.path.join(analysis_root, f"RENDITION_{track.filename}")
-                track.save(rendition_path)
-                drift, needs_val = analyze_temporal_drift(anchor_path, rendition_path)
+                r_path = os.path.join(analysis_root, f"RENDITION_{track.filename}")
+                track.save(r_path)
+                drift, needs_val, viz = analyze_temporal_drift(anchor_path, r_path)
                 analysis_report.append({
                     'filename': track.filename,
                     'offset_ms': drift,
-                    'needs_review': needs_val
+                    'needs_review': needs_val,
+                    'visual': viz
                 })
 
         return jsonify({'reference': anchor_track.filename, 'results': analysis_report})
     except Exception as e:
-        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
     finally:
         shutil.rmtree(analysis_root, ignore_errors=True)
