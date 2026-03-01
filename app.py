@@ -13,6 +13,7 @@ from io import BytesIO
 import traceback
 import acoustid
 import subprocess
+import soundfile as sf
 from scipy import signal
 from flask import Flask, request, jsonify, render_template
 
@@ -22,32 +23,46 @@ app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024 
 app.config['MAX_FORM_MEMORY_SIZE'] = 500 * 1024 * 1024
 
-# Create a 'data' folder for stable permissions
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MEDIA_VOLATILE_PATH = os.path.join(BASE_DIR, "data")
 if not os.path.exists(MEDIA_VOLATILE_PATH):
     os.makedirs(MEDIA_VOLATILE_PATH)
 
 SUPPORTED_CONTAINERS = {'wav', 'mp3', 'm4a', 'flac', 'aac', 'mp4'}
-
-# In-memory cache for fingerprints to speed up multi-file analysis
 FINGERPRINT_CACHE = {}
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in SUPPORTED_CONTAINERS
 
+def get_file_metadata(path):
+    """Extracts technical properties using soundfile/librosa."""
+    try:
+        info = sf.info(path)
+        return {
+            "sr": f"{info.samplerate} Hz",
+            "duration": f"{round(info.duration, 2)}s",
+            "bit_depth": info.subtype,  # e.g., 'PCM_16', 'FLOAT'
+            "channels": info.channels
+        }
+    except Exception:
+        # Fallback for compressed formats like MP3 where soundfile might struggle
+        y, sr = librosa.load(path, sr=None, duration=1)
+        duration = librosa.get_duration(path=path)
+        return {
+            "sr": f"{sr} Hz",
+            "duration": f"{round(duration, 2)}s",
+            "bit_depth": "Compressed",
+            "channels": "Unknown"
+        }
+
 def get_efficient_fingerprint(file_path):
-    """Calculates or retrieves a cached fingerprint using a file hash."""
     with open(file_path, 'rb') as f:
         file_hash = hashlib.md5(f.read(1024*1024)).hexdigest()
-    
     if file_hash in FINGERPRINT_CACHE:
         return FINGERPRINT_CACHE[file_hash]
     
-    # Path to fpcalc - ensure this is correct for your Mac
     cmd = f"/opt/homebrew/bin/fpcalc -plain '{file_path}'"
     fp = subprocess.check_output(cmd, shell=True, timeout=30).decode().strip()
-    
     FINGERPRINT_CACHE[file_hash] = fp
     return fp
 
@@ -73,29 +88,22 @@ def analyze_temporal_drift(anchor_path, rendition_path, sr=22050, hop_length=512
         abs_rendition = os.path.abspath(rendition_path)
         match_score = 0.0
 
-        # --- FAILSAFE: BYTE-LEVEL COMPARISON ---
-        # If user uploads the exact same file, this forces 100%
         with open(abs_anchor, 'rb') as f1, open(abs_rendition, 'rb') as f2:
             if f1.read(1024*1024) == f2.read(1024*1024):
                 match_score = 100.0
 
-        # --- FINGERPRINTING (If not already determined 100%) ---
         if match_score < 100:
             try:
                 fp_a = get_efficient_fingerprint(abs_anchor)
                 fp_b = get_efficient_fingerprint(abs_rendition)
-                
                 if fp_a and fp_b:
                     if fp_a == fp_b:
                         match_score = 100.0
                     else:
-                        raw_match = acoustid.compare_fingerprints(fp_a, fp_b)
-                        match_score = round(raw_match * 100, 2)
-            except Exception as fp_err:
-                print(f"DEBUG Fingerprint Error: {fp_err}")
+                        match_score = round(acoustid.compare_fingerprints(fp_a, fp_b) * 100, 2)
+            except Exception:
                 match_score = 0.0
 
-        # --- SIGNAL PROCESSING ---
         anchor_buffer, _ = librosa.load(abs_anchor, sr=sr, mono=True, duration=60)
         rendition_buffer, _ = librosa.load(abs_rendition, sr=sr, mono=True, duration=60)
         
@@ -112,17 +120,12 @@ def analyze_temporal_drift(anchor_path, rendition_path, sr=22050, hop_length=512
         lag_frame = np.argmax(correlation) - len(anchor_env) // 2
         drift_ms = round(float(lag_frame * hop_length / sr * 1000), 2)
         
-        # --- VALIDATION LOGIC ---
         issues = []
-        if abs(drift_ms) > 100:
-            issues.append("Severe desync (>100ms)")
-        elif abs(drift_ms) > 50:
-            issues.append("Minor desync (50-100ms)")
+        if abs(drift_ms) > 100: issues.append("Severe desync (>100ms)")
+        elif abs(drift_ms) > 50: issues.append("Minor desync (50-100ms)")
             
-        if match_score < 30:
-            issues.append("Content mismatch - wrong dub?")
-        elif match_score < 70:
-            issues.append("Low confidence match")
+        if match_score < 30: issues.append("Content mismatch - wrong dub?")
+        elif match_score < 70: issues.append("Low confidence match")
             
         validation_flag = len(issues) > 0
         viz = generate_visual_comparison(anchor_buffer[:sr*15], rendition_buffer[:sr*15], drift_ms, match_score, sr)
@@ -163,12 +166,18 @@ def upload_files():
 
         anchor_path = os.path.join(analysis_root, anchor_track.filename)
         anchor_track.save(anchor_path)
+        
+        # Get Master Metadata
+        ref_metadata = get_file_metadata(anchor_path)
 
         results = []
         for track in rendition_tracks:
             if track.filename and allowed_file(track.filename):
                 r_path = os.path.join(analysis_root, track.filename)
                 track.save(r_path)
+                
+                # Get Comparison Metadata
+                comp_metadata = get_file_metadata(r_path)
                 
                 drift, needs_val, viz, score, issues = analyze_temporal_drift(anchor_path, r_path)
                 
@@ -178,7 +187,9 @@ def upload_files():
                     'match_confidence': score, 
                     'needs_review': needs_val, 
                     'visual': viz,
-                    'issues': issues
+                    'issues': issues,
+                    'ref_meta': ref_metadata,
+                    'comp_meta': comp_metadata
                 })
         return jsonify({'reference': anchor_track.filename, 'results': results})
     except Exception as e:
